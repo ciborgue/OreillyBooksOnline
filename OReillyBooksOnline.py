@@ -34,16 +34,6 @@ class OreillyBooksOnline:
         'NSMAP_CONTAINER': {
             None: 'urn:oasis:names:tc:opendocument:xmlns:container',
         },
-        'NSMAP_PACKAGE': {
-            None: 'http://www.idpf.org/2007/opf',
-            'xml': 'http://www.w3.org/XML/1998/namespace',
-        },
-        'NSMAP_PACKAGE_METADATA': {
-            'dc': 'http://purl.org/dc/elements/1.1/',
-        },
-        'TYPE_CONV': {
-            'text/html': 'application/xhtml+xml',
-        },
         'ENCODING': 'utf-8',
     })
     HTTP_OK = [HTTPStatus.OK]
