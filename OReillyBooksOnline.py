@@ -53,14 +53,6 @@ class OreillyBooksOnline:
             for item in self.args.css_map.split(',') if item
         }
 
-        for directory in [self.args.output,
-                          self.root,
-                          f'{self.root}/{self.CONST.EPUB}',
-                          f'{self.root}/META-INF']:  # no typo, `META-INF`
-            if not os.path.exists(directory):
-                logging.info(f'Making directory: {directory}')
-                os.mkdir(directory)
-
     @staticmethod
     async def _request(session,
                        url: str,
@@ -107,9 +99,14 @@ class OreillyBooksOnline:
                              f' with {self.args.css_map[asset.full_path]}')
                 with open(self.args.css_map[asset.full_path], 'rb') as css:
                     asset.read = css.read()
-        elif self.args.woff2 and asset.full_path in {
-                item.full_path for item in book.assets if item.kind in ['other_asset'] and
-                item.media_type.startswith('font/') and item.media_type not in ['font/woff2']}:
+        elif self.args.woff2 and \
+                asset.full_path in {
+                    item.full_path for item in book.assets
+                    if item.kind in ['font', 'other_asset']
+                    and len(media_type := item.media_type.split('/')) == 2
+                    and media_type.pop() not in ['woff2']
+                    and media_type.pop() in ['font']
+                }:
 
             asset.inactive = True
 
