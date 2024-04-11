@@ -58,6 +58,11 @@ class OreillyBooksOnline:
         self.root = f'{self.args.output}/{self.args.book_id}'
         logging.info(f'Root directory is set to: {self.root}')
 
+        self.args.css_map = {
+            (value := item.split(':'))[0]: value[1]
+            for item in self.args.css_map.split(',') if item
+        }
+
         for directory in [self.args.output,
                           self.root,
                           f'{self.root}/{self.CONST.EPUB}',
@@ -104,8 +109,14 @@ class OreillyBooksOnline:
     async def _patch(self,
                      book: SimpleNamespace,
                      asset: SimpleNamespace) -> typing.Optional[SimpleNamespace]:
-        if asset.kind in ['image', 'stylesheet']:
-            return
+        if asset.kind in ['image']:
+            pass
+        elif asset.kind in ['stylesheet']:
+            if asset.full_path in self.args.css_map:
+                logging.info(f'Replacing CSS content: {asset.full_path}'
+                             f' with {self.args.css_map[asset.full_path]}')
+                with open(self.args.css_map[asset.full_path], 'rb') as css:
+                    asset.read = css.read()
         elif self.args.woff2 and asset.full_path in {
                 item.full_path for item in book.assets if item.kind in ['other_asset'] and
                 item.media_type.startswith('font/') and item.media_type not in ['font/woff2']}:
@@ -129,7 +140,6 @@ class OreillyBooksOnline:
                 woff_asset.read = woff.read()
 
             return woff_asset
-
         elif asset.kind in ['chapter']:
             parser = etree.HTMLParser(encoding=asset.encoding)
 
@@ -298,6 +308,14 @@ class OreillyBooksOnline:
                     )
                 book.__dict__[k] = v
 
+            stylesheets = {
+                file['full_path']
+                for file in book.files
+                for chapter in book.chapters
+                if file['url'] in chapter['related_assets']['stylesheets']
+            }
+            logging.info(f'The following stylesheets are declared: {stylesheets}')
+
             logging.info('Loading book assets')
             book.assets = await asyncio.gather(*[
                 asyncio.create_task(self._request(session, asset['url'], data=asset))
@@ -327,7 +345,7 @@ class OreillyBooksOnline:
         ])
         print(f'==========\n\n'
               f'All done; now you can run the following command to generate your EPUB:\n'
-              f'\tcd {self.root}; zip -9X ~/Documents/{self.args.book_id}.epub manifest '
+              f'\tcd {self.root}; zip -9X ~/Documents/{self.args.book_id}.epub mimetype '
               f'$(find META-INF {self.CONST.EPUB} -type f)\n\n'
               f'Also please run EPUB validator against the resulting file:\n'
               f'\tjava -jar epubcheck.jar ~/Documents/{self.args.book_id}.epub\n\n'
@@ -342,6 +360,9 @@ if __name__ == '__main__':
                         help='Firefox cookie database name')
     parser.add_argument('--email', required=True,
                         help='Email (it is used for login validation only)')
+    parser.add_argument('--css-map', default='',
+                        help='Replace CSS files with the provided ones; '
+                             'format is `full_path1:user_css1[,full_path2:user_css2[...]]`')
     parser.add_argument('--woff2', action='store_true',
                         help='Convert fonts to WOFF2 with `woff2_compress`;'
                              ' if enabled it MUST succeed for all fonts')
