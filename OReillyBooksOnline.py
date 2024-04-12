@@ -278,8 +278,9 @@ class OreillyBooksOnline:
                 self.CONST.API_ENDPOINT.format(oreilly=self.args.oreilly,
                                                book_id=book.book_id))
 
-            logging.info('Loading book components')
             components = ['chapters', 'spine', 'files', 'table_of_contents']
+
+            logging.info(f'Loading book components: {components}')
             downloaded = await asyncio.gather(*[
                 asyncio.create_task(self.retrieve_json(session,
                                                        book.info[component]))
@@ -287,14 +288,15 @@ class OreillyBooksOnline:
             ])
 
             for k, v in dict(zip(components, downloaded)).items():
+                book.__dict__[k] = v
                 if self.args.logging_level in ['DEBUG']:
-                    logging.debug('Saving components to `debug` directory')
+                    logging.debug(f'Saving component to `debug` directory: {k}')
                     await self._write(
                         f'{self.root}/debug/__{k}__.json',
                         json.dumps(v, indent=2).encode(self.CONST.ENCODING)
                     )
-                book.__dict__[k] = v
 
+            # This is for the user to know what CSSes are present if override is needed
             stylesheets = {
                 file['full_path']
                 for file in book.files
@@ -308,6 +310,14 @@ class OreillyBooksOnline:
                 asyncio.create_task(self._request(session, asset['url'], data=asset))
                 for asset in book.files
             ])
+
+            if self.args.logging_level in ['DEBUG']:
+                logging.debug('Saving original assets')
+                await asyncio.gather(*[
+                    asyncio.create_task(
+                        self._write(f'{self.root}/debug/{asset.full_path}', asset.read)
+                    ) for asset in book.assets
+                ])
 
         return book
 
