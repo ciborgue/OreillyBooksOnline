@@ -20,6 +20,7 @@ from http import HTTPStatus
 from urllib.parse import urlparse
 
 import typing  # `pytype`s typing.Optional
+import pickle
 
 
 class OreillyBooksOnline:
@@ -27,6 +28,7 @@ class OreillyBooksOnline:
         'LOGIN_ENDPOINT': 'https://learning.{oreilly}/profile/',
         'API_ENDPOINT': 'https://api.{oreilly}/api/v2/epubs/urn:orm:book:{book_id}/',
         'EPUB': 'EPUB',  # choises are {'OEBPS', 'OPS', 'EPUB'}
+        'COMPONENTS': ['chapters', 'spine', 'files', 'table_of_contents'],
         'NSMAP_CHAPTER': {
             None: 'http://www.w3.org/1999/xhtml',
             'epub': 'http://www.idpf.org/2007/ops',
@@ -35,6 +37,11 @@ class OreillyBooksOnline:
             None: 'urn:oasis:names:tc:opendocument:xmlns:container',
         },
         'ENCODING': 'utf-8',
+        'DEBUG': ['DEBUG'],
+        'ATTRS': [SimpleNamespace(**item) for item in [
+            {'name': r'href', 'xpath': r'//a[@href]', 'regex': r'^/'},
+            {'name': r'src', 'xpath': r'//img[@src]', 'regex': r'^/'},
+        ]],
     })
     HTTP_OK = [HTTPStatus.OK]
 
@@ -48,10 +55,13 @@ class OreillyBooksOnline:
         self.root = f'{self.args.output}/{self.args.book_id}'
         logging.info(f'Root directory is set to: {self.root}')
 
-        self.args.css_map = {
-            (value := item.split(':'))[0]: value[1]
-            for item in self.args.css_map.split(',') if item
-        }
+        self.args.css_map = {dict([(item.split(':'))])
+                             for item in self.args.css_map}
+
+        self.args.extra_attrs = [  # ie. 'image:href'
+            SimpleNamespace(name=(e := elem.split(':'))[1],
+                            xpath=f'//{e[0]}[@{e[1]}]',
+                            regex=r'^/') for elem in self.args.extra_attrs]
 
     @staticmethod
     async def _request(session,
@@ -128,6 +138,9 @@ class OreillyBooksOnline:
 
             return woff_asset
         elif asset.kind in ['chapter']:
+            attributes = self.CONST.ATTRS + self.args.extra_attrs
+            prefix = re.sub(r'[^/]+', '..', os.path.dirname(asset.full_path))
+
             parser = etree.HTMLParser(encoding=asset.encoding)
 
             root = etree.fromstring(asset.read, parser)
@@ -143,7 +156,8 @@ class OreillyBooksOnline:
             root.insert(0, head)  # add <head> as a first element
 
             etree.SubElement(head, 'meta',
-                             {'charset': asset.encoding,
+                             {'http-equiv': 'Content-Type',
+                              'content': f'{asset.content}; charset={asset.encoding}',
                               'lang': book.info['language'],
                               'xml:lang': book.info['language']})
 
@@ -154,25 +168,36 @@ class OreillyBooksOnline:
             for css in chapter['related_assets']['stylesheets']:
                 file = next(item for item in book.assets
                             if item.url == css)
-                etree.SubElement(head, 'link', {'rel': 'stylesheet',
-                                                'type': file.media_type,
-                                                'href': file.full_path})
+                etree.SubElement(head, 'link', {
+                                     'rel': 'stylesheet',
+                                     'type': file.media_type,
+                                     'href': '/'.join(
+                                        [item for item in [prefix, file.full_path] if item]
+                                     )
+                                 })
 
-            for img in elementpath.select(root, r'//img[@src]'):
-                src = urlparse(img.attrib['src'])
-                if src.scheme not in ['http', 'https']:
-                    file = next(item for item in book.files
-                                if item['filename'] == os.path.basename(src.path))
-                    img.attrib['src'] = src._replace(path=f'{file["full_path"]}',
-                                                     scheme='', netloc='').geturl()
+            for attr in attributes:
+                for elem in elementpath.select(root, attr.xpath):
+                    link = urlparse(elem.attrib[attr.name])
+                    if link.path and not link.scheme:
+                        file = next(item for item in book.files
+                                    if item['filename'] == os.path.basename(link.path))
+                        elem.attrib[attr.name] = link._replace(
+                            path='/'.join([item for item in [prefix, file['full_path']]
+                                           if item]),
+                            scheme='', netloc='').geturl()
 
-            for a in elementpath.select(root, r'//a[@href]'):
-                href = urlparse(a.attrib['href'])
-                if href.scheme not in ['http', 'https', 'mailto'] and href.path:
-                    file = next(item for item in book.files
-                                if item['filename'] == os.path.basename(href.path))
-                    a.attrib['href'] = href._replace(path=f'{file["full_path"]}',
-                                                     scheme='', netloc='').geturl()
+            # safety check: make sure no tags contain href/src/etc from API
+            expression = ''.join([
+                '//*[',
+                ' or '.join([f"fn:matches(@{item.name}, '{item.regex}')"
+                             for item in attributes]),
+                ']'
+            ])
+            for elem in elementpath.select(root, expression):
+                raise RuntimeError(f'Element not localized in {asset.full_path}: '
+                                   f'{self.etree_to_string(elem).decode(self.CONST.ENCODING)}')
+
             asset.read = self.etree_to_string(root)
         elif asset.kind in ['other_asset'] and \
                 asset.media_type in ['application/oebps-package+xml']:
@@ -278,23 +303,15 @@ class OreillyBooksOnline:
                 self.CONST.API_ENDPOINT.format(oreilly=self.args.oreilly,
                                                book_id=book.book_id))
 
-            components = ['chapters', 'spine', 'files', 'table_of_contents']
-
-            logging.info(f'Loading book components: {components}')
+            logging.info(f'Loading book components: {self.CONST.COMPONENTS}')
             downloaded = await asyncio.gather(*[
                 asyncio.create_task(self.retrieve_json(session,
                                                        book.info[component]))
-                for component in components
+                for component in self.CONST.COMPONENTS
             ])
 
-            for k, v in dict(zip(components, downloaded)).items():
-                book.__dict__[k] = v
-                if self.args.logging_level in ['DEBUG']:
-                    logging.debug(f'Saving component to `debug` directory: {k}')
-                    await self._write(
-                        f'{self.root}/debug/__{k}__.json',
-                        json.dumps(v, indent=2).encode(self.CONST.ENCODING)
-                    )
+            [book.__dict__.__setitem__(key, value)
+             for key, value in zip(self.CONST.COMPONENTS, downloaded)]
 
             # This is for the user to know what CSSes are present if override is needed
             stylesheets = {
@@ -305,30 +322,47 @@ class OreillyBooksOnline:
             }
             logging.info(f'The following stylesheets are declared: {stylesheets}')
 
-            logging.info('Loading book assets')
+            logging.info('Loading book assets (book.files + content)')
             book.assets = await asyncio.gather(*[
                 asyncio.create_task(self._request(session, asset['url'], data=asset))
                 for asset in book.files
             ])
 
-            if self.args.logging_level in ['DEBUG']:
-                logging.debug('Saving original assets')
-                await asyncio.gather(*[
-                    asyncio.create_task(
-                        self._write(f'{self.root}/debug/{asset.full_path}', asset.read)
-                    ) for asset in book.assets
-                ])
-
         return book
 
     async def run(self):
         logging.info('Loading book')
-        book = await self.retrieve_book()
+        if self.args.logging_level in self.CONST.DEBUG:
+            try:
+                with open(f'{self.root}.pickle', 'rb') as pckl:
+                    book = pickle.load(pckl)
+            except FileNotFoundError:
+                pass
+
+        if 'book' not in locals():
+            book = await self.retrieve_book()
+
+            if self.args.logging_level in self.CONST.DEBUG:
+                await asyncio.gather(
+                    *([asyncio.create_task(self._write(
+                        f'{self.root}/debug/__{component}__.json',
+                        json.dumps(
+                            book.__dict__[component], indent=2
+                        ).encode(self.CONST.ENCODING),
+                       )) for component in self.CONST.COMPONENTS] +
+                      [asyncio.create_task(self._write(
+                        f'{self.root}/debug/{asset.full_path}',
+                        asset.read
+                       )) for asset in book.assets])
+                )
+                with open(f'{self.root}.pickle', 'wb') as pckl:
+                    pickle.dump(book, pckl)
 
         logging.info('Patching book assets')
         book.assets += [
             item for item in await asyncio.gather(*[
-                asyncio.create_task(self._patch(book, asset)) for asset in book.assets
+                asyncio.create_task(self._patch(book, asset))
+                for asset in book.assets
             ]) if item
         ]
         book.assets.append(self.generate_epub_container(book))
@@ -357,9 +391,11 @@ if __name__ == '__main__':
                         help='Firefox cookie database name')
     parser.add_argument('--email', required=True,
                         help='Email (it is used for login validation only)')
-    parser.add_argument('--css-map', default='',
-                        help='Replace CSS files with the provided ones; '
-                             'format is `full_path1:user_css1[,full_path2:user_css2[...]]`')
+    parser.add_argument('-e', '--extra-attrs', default=[], nargs='+',
+                        help='Extra attributes to rebase; format is `elem:attr`')
+    parser.add_argument('--css-map', default=[], nargs='+',
+                        help='Replace CSS files with the provided ones;'
+                             ' format is `full_path:user_css`')
     parser.add_argument('--woff2', action='store_true',
                         help='Convert fonts to WOFF2 with `woff2_compress`;'
                              ' if enabled it MUST succeed for all fonts')
