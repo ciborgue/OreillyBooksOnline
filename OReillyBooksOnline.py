@@ -212,6 +212,7 @@ class OreillyBooksOnline:
                             if item.full_path == package_item.attrib['href']).full_path
                 if self.args.woff2:
                     package_item.attrib['href'] = re.sub(r'[/.](ttf|otf)$', '.woff2', file)
+                    package_item.attrib['media-type'] = 'application/vnd.ms-opentype'
 
             asset.read = self.etree_to_string(root)
         else:
