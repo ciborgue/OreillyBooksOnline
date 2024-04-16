@@ -42,6 +42,7 @@ class OreillyBooksOnline:
             {'name': r'href', 'xpath': r'//a[@href]', 'regex': r'^/'},
             {'name': r'src', 'xpath': r'//img[@src]', 'regex': r'^/'},
         ]],
+        'FONTS': ['.otf', '.ttf', '.woff', '.woff2'],
     })
     HTTP_OK = [HTTPStatus.OK]
 
@@ -207,11 +208,13 @@ class OreillyBooksOnline:
             root.insert(0, etree.Comment('Prepared with: https://tinyl.io/Abuc'))
 
             for package_item in elementpath.select(root, r'//item[@href]'):
-                # make it fail if font is not supplied in `book.assets`
-                file = next(item for item in book.assets
-                            if item.full_path == package_item.attrib['href']).full_path
-                if self.args.woff2:
-                    package_item.attrib['href'] = re.sub(r'[/.](ttf|otf)$', '.woff2', file)
+                file = next(
+                    item for item in book.assets
+                    if item.full_path == package_item.attrib['href'])
+                if self.args.woff2 and file.filename_ext in self.CONST.FONTS:
+                    package_item.attrib['href'] = re.sub(f'\\{file.filename_ext}$',
+                                                         '.woff2',
+                                                         file.full_path)
                     package_item.attrib['media-type'] = 'application/vnd.ms-opentype'
 
             asset.read = self.etree_to_string(root)
