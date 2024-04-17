@@ -1,5 +1,6 @@
 asyncio
 aiohttp
 aiofiles
+cssutils
 lxml
 elementpath

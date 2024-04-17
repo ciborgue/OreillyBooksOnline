@@ -5,6 +5,7 @@ import aiofiles
 import aiofiles.os
 
 import argparse
+import cssutils
 import json
 import logging
 import sqlite3
@@ -43,6 +44,7 @@ class OreillyBooksOnline:
             {'name': r'src', 'xpath': r'//img[@src]', 'regex': r'^/'},
         ]],
         'FONTS': ['.otf', '.ttf', '.woff', '.woff2'],
+        'CSSURL': r'^(\s*)src\s*:\s*url\("?(.*)"?\)\s*(;?)\s*$',
     })
     HTTP_OK = [HTTPStatus.OK]
 
@@ -99,17 +101,42 @@ class OreillyBooksOnline:
         async with aiofiles.open(epubpath, mode='wb') as handle:
             await handle.write(data)
 
+    @classmethod
+    def patch_font_name(cls, book: SimpleNamespace, path: str) -> typing.Optional[str]:
+        orig_file = next(item for item in book.assets if item.full_path == path)
+        if orig_file.filename_ext in cls.CONST.FONTS:
+            return re.sub(f'\\{orig_file.filename_ext}$', '.woff2', path)
+
     async def _patch(self,
                      book: SimpleNamespace,
                      asset: SimpleNamespace) -> typing.Optional[SimpleNamespace]:
         if asset.kind in ['image']:
             pass
         elif asset.kind in ['stylesheet']:
+            assert asset.media_type == asset.content, \
+                'Different media type in book info and content from HTTP'
             if asset.full_path in self.args.css_map:
                 logging.info(f'Replacing CSS content: {asset.full_path}'
                              f' with {self.args.css_map[asset.full_path]}')
                 with open(self.args.css_map[asset.full_path], 'rb') as css:
                     asset.read = css.read()
+
+            css = list()
+
+            for line in cssutils.parseString(asset.read,
+                                             encoding=asset.encoding).cssText.splitlines():
+                line = line.decode(asset.encoding)
+                if self.args.woff2 and (sub := re.match(self.CONST.CSSURL, line)):
+                    if file := self.patch_font_name(book, sub.groups()[1]):
+                        line = f'{sub.groups()[0]}' \
+                               f'src:url("{file}")' \
+                               f'{sub.groups()[2]}'
+                css.append(line)
+
+            asset.read = '\n'.join(css).encode(asset.encoding)
+
+            logging.info(f'CSS parsed and/or patched: {asset.full_path}')
+
         elif self.args.woff2 and \
                 asset.full_path in {
                     item.full_path for item in book.assets
@@ -208,13 +235,10 @@ class OreillyBooksOnline:
             root.insert(0, etree.Comment('Prepared with: https://tinyl.io/Abuc'))
 
             for package_item in elementpath.select(root, r'//item[@href]'):
-                file = next(
-                    item for item in book.assets
-                    if item.full_path == package_item.attrib['href'])
-                if self.args.woff2 and file.filename_ext in self.CONST.FONTS:
-                    package_item.attrib['href'] = re.sub(f'\\{file.filename_ext}$',
-                                                         '.woff2',
-                                                         file.full_path)
+                if self.args.woff2 and \
+                        (file := self.patch_font_name(book,
+                                                      package_item.attrib['href'])):
+                    package_item.attrib['href'] = file
                     package_item.attrib['media-type'] = 'application/vnd.ms-opentype'
 
             asset.read = self.etree_to_string(root)
