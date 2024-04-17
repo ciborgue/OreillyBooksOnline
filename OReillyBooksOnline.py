@@ -121,7 +121,7 @@ class OreillyBooksOnline:
                 with open(self.args.css_map[asset.full_path], 'rb') as css:
                     asset.read = css.read()
 
-            css = list()
+            css, updated = list(), False
 
             for line in cssutils.parseString(asset.read,
                                              encoding=asset.encoding).cssText.splitlines():
@@ -131,11 +131,14 @@ class OreillyBooksOnline:
                         line = f'{sub.groups()[0]}' \
                                f'src:url("{file}")' \
                                f'{sub.groups()[2]}'
+                        updated = True
                 css.append(line)
 
-            asset.read = '\n'.join(css).encode(asset.encoding)
-
-            logging.info(f'CSS parsed and/or patched: {asset.full_path}')
+            if updated:
+                asset.read = '\n'.join(css).encode(asset.encoding)
+                logging.info(f'CSS parsed and patched: {asset.full_path}')
+            else:
+                logging.info(f'CSS kept unchanged: {asset.full_path}')
 
         elif self.args.woff2 and \
                 asset.full_path in {
@@ -165,6 +168,7 @@ class OreillyBooksOnline:
                 woff_asset.read = woff.read()
 
             return woff_asset
+
         elif asset.kind in ['chapter']:
             attributes = self.CONST.ATTRS + self.args.extra_attrs
             prefix = re.sub(r'[^/]+', '..', os.path.dirname(asset.full_path))
