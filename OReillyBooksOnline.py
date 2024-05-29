@@ -70,7 +70,9 @@ class OreillyBooksOnline:
     async def _request(session,
                        url: str,
                        method: str = 'get',
-                       data: dict = {}) -> SimpleNamespace:
+                       data: dict | None = None) -> SimpleNamespace:
+        if data is None:
+            data = dict()
         await asyncio.sleep(random.uniform(0.25, 1.00))
         async with getattr(session, method)(url) as resp:
             assert resp.status in OreillyBooksOnline.HTTP_OK, \
@@ -285,13 +287,13 @@ class OreillyBooksOnline:
             pretty_print=self.args.pretty_print
         )
 
-    def generate_epub_mimetype(self):
+    def generate_epub_mimetype(self) -> SimpleNamespace:
         return SimpleNamespace(**{
             'full_path': '../mimetype',
             'read': b'application/epub+zip',
         })
 
-    def generate_epub_container(self, book):
+    def generate_epub_container(self, book: SimpleNamespace) -> SimpleNamespace:
         package_opf = next(item for item in book.assets
                            if item.media_type == 'application/oebps-package+xml'
                            and item.full_path.endswith('.opf'))
